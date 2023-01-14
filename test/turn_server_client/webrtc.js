@@ -1,9 +1,9 @@
 var localVideo;
 var localStream;
-var remoteVideo;
 var peerConnection;
 var uuid;
 var serverConnection;
+var videos;
 
 var peerConnectionConfig = {
   'iceServers': [
@@ -11,14 +11,23 @@ var peerConnectionConfig = {
     {'urls': 'stun:stun.l.google.com:19302'},
   ]
 };
+const GROUP = 'testgroup';
+
+// msg is a dict
+function send(serverConnection, msg) {
+  msg['headers'] = {}
+  msg['headers']['stream-group'] = GROUP; // group header
+  serverConnection.send(JSON.stringify(msg));
+}
 
 function pageReady() {
   uuid = createUUID();
 
   localVideo = document.getElementById('localVideo');
-  remoteVideo = document.getElementById('remoteVideo');
+  videos = document.querySelector('.videos');
+  console.log(videos);
 
-  serverConnection = new WebSocket('ws://localhost:8443/signal');
+  serverConnection = new WebSocket('ws://localhost:9999/signal');
   serverConnection.onmessage = gotMessageFromServer;
 
   var constraints = {
@@ -42,6 +51,12 @@ function start(isCaller) {
   peerConnection = new RTCPeerConnection(peerConnectionConfig);
   peerConnection.onicecandidate = gotIceCandidate;
   peerConnection.ontrack = gotRemoteStream;
+
+  peerConnection.onnegotiationneeded = async () => {
+    console.log('negotiation needed');
+    // await pc.setLocalDescription(await pc.createOffer());
+    // io.send({description: pc.localDescription});
+  }
   peerConnection.addStream(localStream);
 
   if(isCaller) {
@@ -57,6 +72,7 @@ function gotMessageFromServer(message) {
   // Ignore messages from ourself
   if(signal.uuid == uuid) return;
 
+  console.log("Got message from server ", signal);
   if(signal.sdp) {
     peerConnection.setRemoteDescription(new RTCSessionDescription(signal.sdp)).then(function() {
       // Only create answers in response to offers
@@ -71,21 +87,35 @@ function gotMessageFromServer(message) {
 
 function gotIceCandidate(event) {
   if(event.candidate != null) {
-    serverConnection.send(JSON.stringify({'ice': event.candidate, 'uuid': uuid}));
+    send(serverConnection, {'ice': event.candidate, 'uuid': uuid});
   }
 }
 
 function createdDescription(description) {
-  console.log('got description');
+  console.log('got description', description);
 
   peerConnection.setLocalDescription(description).then(function() {
-    serverConnection.send(JSON.stringify({'sdp': peerConnection.localDescription, 'uuid': uuid}));
+    send(serverConnection, {'sdp': peerConnection.localDescription, 'uuid': uuid});
   }).catch(errorHandler);
 }
 
+let tracks = {'n': 0};
 function gotRemoteStream(event) {
   console.log('got remote stream');
-  remoteVideo.srcObject = event.streams[0];
+  let video;  let id = event.streams[0].id;
+  if(!tracks[id]) {
+    video = document.createElement('video');
+
+    video.setAttribute("id", id);
+    video.setAttribute("autoplay", true);
+    videos.appendChild(video);
+    console.log(event);
+    tracks[id] = video;
+    
+  } else {
+    video = tracks[id];
+  }
+  video.srcObject = event.streams[0];
 }
 
 function errorHandler(error) {
