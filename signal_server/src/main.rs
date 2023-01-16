@@ -8,7 +8,6 @@ use std::net::SocketAddr;
 mod handler;
 mod ws;
 mod webrtc;
-mod webcam;
 use crate::webrtc::{WebRTCConnection, Track};
 
 
