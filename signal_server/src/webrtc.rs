@@ -187,7 +187,7 @@ impl WebRTCConnection {
       });
       Box::pin(async {})
     }));
-    
+
     self.peer_connection.on_ice_gathering_state_change(Box::new(move |s: RTCIceGathererState| {
       debug!("Peer ICE gathering state has changed: {:?}", s);
       Box::pin(async {})
@@ -316,23 +316,27 @@ impl WebRTCConnection {
   }
 
   pub async fn renegotiate(&self) {
-    match self.peer_connection.create_offer(None).await {
-        Ok(offer) => {
-          let offer = RTCSessionDescriptionInit{sdp: offer};
-          let local_res = self.peer_connection.set_local_description(offer.sdp.clone()).await;
-          match local_res {
-            Ok(value) => debug!("Set local description {:?}", value),
-            Err(err) => warn!("Set local description error {:?}", err),
-          };
-          let offer = serde_json::to_string(&offer).unwrap();
-          let msg = warp::ws::Message::text(offer);
-          match self.sender.send(Ok(msg)) {
-            Err(err) => warn!("Error sending offer {:?}", err),
-            _ => {}
-          }
-        }
-        Err(err) => warn!("Error creating renegotiation offer {:?}", err),
+    let offer = self.peer_connection.create_offer(None).await;
+    if offer.is_err() {
+      warn!("Error creating renegotiation offer {:?}", offer.err().unwrap());
+      return;
     }
+
+    let offer = offer.unwrap();
+    let offer = RTCSessionDescriptionInit{sdp: offer};
+    match self.peer_connection.set_local_description(offer.sdp.clone()).await {
+      Ok(value) => {
+        debug!("Set local description {:?}", value);
+        let offer = serde_json::to_string(&offer).unwrap();
+        let msg = warp::ws::Message::text(offer);
+        match self.sender.send(Ok(msg)) {
+          Err(err) => warn!("Error sending offer {:?}", err),
+          _ => {}
+        }
+      },
+      Err(err) => warn!("Set local description error {:?}", err),
+    };
+
   }
 
 
@@ -342,10 +346,10 @@ impl WebRTCConnection {
 
   pub fn summary(&self) {
     debug!("ice conn {} ice gathering {} signaling {} connection {}", 
-             self.peer_connection.ice_connection_state(), 
-             self.peer_connection.ice_gathering_state(),
-             self.peer_connection.signaling_state(),
-             self.peer_connection.connection_state());
+           self.peer_connection.ice_connection_state(), 
+           self.peer_connection.ice_gathering_state(),
+           self.peer_connection.signaling_state(),
+           self.peer_connection.connection_state());
 
   }
 }
