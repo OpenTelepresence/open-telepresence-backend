@@ -24,6 +24,7 @@ use webrtc::Error;
 use std::collections::HashMap;
 use std::sync::Arc;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use tracing::{debug, warn};
 
 #[derive(Debug, Clone)]
 pub struct WebRTCConnection {
@@ -106,14 +107,7 @@ impl WebRTCConnection {
 
   pub async fn setup_callbacks(&self) {
     let ice_sender = self.sender.clone();
-    self.peer_connection.on_signaling_state_change(Box::new(move |state: RTCSignalingState| {
-      // TODO: disconnect
-      println!("Signaling state change {}", state.to_string());
-      Box::pin(async move {})
-    }));
 
-    //         Option<Arc<TrackRemote>>,
-    //         Option<Arc<RTCRtpReceiver>>,
     let p2 = Arc::downgrade(&self.peer_connection);
     let group = self.group.clone();
     let peer_identity = self.get_id();
@@ -153,7 +147,7 @@ impl WebRTCConnection {
               stream_id, // FIXME: mabye this should be changed so the stream of
                          // video-audio is different for each pair
               ));
-          println!("Adding local track {:?} to group {:?}\n", local_track, group);
+          debug!("Adding local track {:?} to group {:?}\n", local_track, group);
           let track = Track{track: local_track, id: track_id};
           let id = track.id.clone();
           let track = Arc::new(track.clone());
@@ -164,22 +158,29 @@ impl WebRTCConnection {
           while let Ok((rtp, _)) = track2.read_rtp().await {
             if let Err(err) = track.track.write_rtp(&rtp).await {
               if Error::ErrClosedPipe != err {
-                print!("output track write_rtp got error: {} and break", err);
+                warn!("output track write_rtp got error: {} and break", err);
                 break;
               } else {
-                print!("output track write_rtp got error: {}", err);
+                warn!("output track write_rtp got error: {}", err);
               }
             }
           }
         });
-        println!("Got track {:?}", track);
+        debug!("Got track {:?}", track);
       };
       Box::pin(async {})
     }));
 
     let webrtc_connection = self.clone();
+
+    self.peer_connection.on_signaling_state_change(Box::new(move |state: RTCSignalingState| {
+      // TODO: disconnect
+      debug!("Signaling state change {}", state.to_string());
+      Box::pin(async move {})
+    }));
+
     self.peer_connection.on_negotiation_needed(Box::new(move|| {
-      println!("negotiation needed\n");
+      debug!("negotiation needed\n");
       let webrtc_connection2 = webrtc_connection.clone();
       tokio::spawn(async move {
         webrtc_connection2.renegotiate().await;
@@ -188,24 +189,24 @@ impl WebRTCConnection {
     }));
     
     self.peer_connection.on_ice_gathering_state_change(Box::new(move |s: RTCIceGathererState| {
-      println!("Peer ICE gathering state has changed: {:?}", s);
+      debug!("Peer ICE gathering state has changed: {:?}", s);
       Box::pin(async {})
     }));
 
     self.peer_connection.on_ice_connection_state_change(Box::new(move |s: RTCIceConnectionState| {
-      println!("Peer ICE connection state has changed: {:?}", s);
+      debug!("Peer ICE connection state has changed: {:?}", s);
       Box::pin(async {})
     }));
 
 
     self.peer_connection.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-      println!("Peer Connection State has changed: {}", s);
+      debug!("Peer Connection State has changed: {}", s);
 
       if s == RTCPeerConnectionState::Failed {
         // Wait until PeerConnection has had no network activity for 30 seconds or another failure. It may be reconnected using an ICE Restart.
         // Use webrtc.PeerConnectionStateDisconnected if you are interested in detecting faster timeout.
         // Note that the PeerConnection may come back from PeerConnectionStateDisconnected.
-        println!("Peer Connection has gone to failed exiting");
+        debug!("Peer Connection has gone to failed exiting");
       }
 
       Box::pin(async {})
@@ -213,14 +214,14 @@ impl WebRTCConnection {
 
     self.peer_connection.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
       // forward candidate
-      println!("WEBRTC pre candidate");
+      debug!("WEBRTC pre candidate");
       if let Some(candidate) = candidate {
-        println!("WEBRTC candidate {}", candidate.to_string());
+        debug!("WEBRTC candidate {}", candidate.to_string());
         let ice_message = serde_json::to_string(&candidate).unwrap();
         let msg = warp::ws::Message::text(ice_message);
-        println!("WEBRTC candidate msg {:?}", msg);
+        debug!("WEBRTC candidate msg {:?}", msg);
         match ice_sender.as_ref().send(Ok(msg)) {
-          Err(err) => println!("Error sending ice candidate {:?}", err),
+          Err(err) => warn!("Error sending ice candidate {:?}", err),
           _ => {}
         }
       }
@@ -229,37 +230,37 @@ impl WebRTCConnection {
   }
 
   pub async fn process_offer(&self, offer: String) {
-    println!("Offer before RTCSessionDescription is {:?}", offer);
+    debug!("Offer before RTCSessionDescription is {:?}", offer);
 
     let description = match serde_json::from_str::<RTCSessionDescription>(&offer.as_str()) {
       Ok(value) => value,
       Err(err) => {
-        println!("Error creating session for offer {:?}", err);
+        warn!("Error creating session for offer {:?}", err);
         RTCSessionDescription::default()
       }
     };
     let res = self.peer_connection.set_remote_description(description).await;
     match res {
-      Ok(value) => println!("Set description {:?}", value),
-      Err(err) => println!("Set description error {:?}", err),
+      Ok(value) => debug!("Set description {:?}", value),
+      Err(err) => warn!("Set description error {:?}", err),
     };
     // https://stackoverflow.com/questions/38036552/rtcpeerconnection-onicecandidate-not-fire
     let answer = match self.peer_connection.create_answer(None).await {
       Ok(a) => a,
       Err(err) => panic!("{}", err),
     };
-    println!("Answer is {:?}", answer);
+    debug!("Answer is {:?}", answer);
     let local_res = self.peer_connection.set_local_description(answer.clone()).await;
     match local_res {
-      Ok(value) => println!("Set local description {:?}", value),
-      Err(err) => println!("Set local description error {:?}", err),
+      Ok(value) => debug!("Set local description {:?}", value),
+      Err(err) => warn!("Set local description error {:?}", err),
     };
 
     let answer = RTCSessionDescriptionInit{sdp: answer};
     let answer = serde_json::to_string(&answer).unwrap();
     let msg = warp::ws::Message::text(answer);
     match self.sender.send(Ok(msg)) {
-      Err(err) => println!("Error sending answer {:?}", err),
+      Err(err) => warn!("Error sending answer {:?}", err),
       _ => {}
     }
   }
@@ -268,13 +269,13 @@ impl WebRTCConnection {
     let description = match serde_json::from_str::<RTCSessionDescription>(&answer.as_str()) {
       Ok(value) => value,
       Err(err) => {
-        println!("Error creating session description for answer {:?}", err);
+        warn!("Error creating session description for answer {:?}", err);
         RTCSessionDescription::default()
       }
     };
     match self.peer_connection.set_remote_description(description).await {
-      Ok(value) => println!("Set remote description {:?}", value),
-      Err(err) => println!("Set remote description error {:?}", err),
+      Ok(value) => debug!("Set remote description {:?}", value),
+      Err(err) => warn!("Set remote description error {:?}", err),
     };
   }
 
@@ -282,16 +283,16 @@ impl WebRTCConnection {
     let candidate = match serde_json::from_str::<RTCIceCandidateInit>(candidate.as_str()) {
       Ok(value) => value,
       Err(err) => {
-        println!("Error adding ice_candidate {:?}", err);
+        warn!("Error adding ice_candidate {:?}", err);
         RTCIceCandidateInit::default()
       }
     };
     match self.peer_connection.add_ice_candidate(candidate).await {
       Ok(_value) => {
-        println!("Successfully added ice candidate");
+        debug!("Successfully added ice candidate");
       },
       Err(err) => {
-        println!("Error adding ice candidate {:?}", err);
+        warn!("Error adding ice candidate {:?}", err);
       }
     }
   }
@@ -299,18 +300,18 @@ impl WebRTCConnection {
   pub async fn add_remote_track(&mut self, track: &Track) {
     match self.peer_connection.add_track(track.track.clone()).await {
       Ok(rtp_sender) => {
-        println!("Successfully added track\n");
+        debug!("Successfully added track\n");
         // Read incoming RTCP packets
         // Before these packets are returned they are processed by interceptors. For things
         // like NACK this needs to be called.
         tokio::spawn(async move {
           let mut rtcp_buf = vec![0u8; 1500];
           while let Ok((_, _)) = rtp_sender.read(&mut rtcp_buf).await { }
-          println!("End rtcp_buf {:?}\n", rtcp_buf);
+          debug!("End rtcp_buf {:?}\n", rtcp_buf);
           Result::<()>::Ok(())
         });
       },
-      Err(err) => println!("Unsuccessfully addition of track: {:?}\n", err)
+      Err(err) => warn!("Unsuccessfully added track: {:?}\n", err)
     }
   }
 
@@ -320,17 +321,17 @@ impl WebRTCConnection {
           let offer = RTCSessionDescriptionInit{sdp: offer};
           let local_res = self.peer_connection.set_local_description(offer.sdp.clone()).await;
           match local_res {
-            Ok(value) => println!("Set local description {:?}", value),
-            Err(err) => println!("Set local description error {:?}", err),
+            Ok(value) => debug!("Set local description {:?}", value),
+            Err(err) => warn!("Set local description error {:?}", err),
           };
           let offer = serde_json::to_string(&offer).unwrap();
           let msg = warp::ws::Message::text(offer);
           match self.sender.send(Ok(msg)) {
-            Err(err) => println!("Error sending offer {:?}", err),
+            Err(err) => warn!("Error sending offer {:?}", err),
             _ => {}
           }
         }
-        Err(err) => println!("Error creating renegotiation offer {:?}", err),
+        Err(err) => warn!("Error creating renegotiation offer {:?}", err),
     }
   }
 
@@ -340,7 +341,7 @@ impl WebRTCConnection {
   }
 
   pub fn summary(&self) {
-    println!("ice conn {} ice gathering {} signaling {} connection {}", 
+    debug!("ice conn {} ice gathering {} signaling {} connection {}", 
              self.peer_connection.ice_connection_state(), 
              self.peer_connection.ice_gathering_state(),
              self.peer_connection.signaling_state(),

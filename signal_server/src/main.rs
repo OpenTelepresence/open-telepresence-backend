@@ -5,6 +5,10 @@ use tokio::sync::{mpsc, Mutex};
 use clap::{arg, Command};
 use std::net::SocketAddr;
 
+use log::start_logger;
+use tracing::{info, debug};
+
+mod log;
 mod handler;
 mod ws;
 mod webrtc;
@@ -39,12 +43,12 @@ impl Group {
   pub async fn add_tracks(&self, to_peer: &mut Box<WebRTCConnection>) {
     let clients = self.clients.lock().await;
     for client in clients.iter() {
-      println!("Trying client {:?}", client);
+      debug!("Trying client {:?}", client);
       if let Some(pc) = &client.lock().await.peer_connection {
-        println!("Got peer_connection {:?}", pc);
+        debug!("Got peer_connection {:?}", pc);
         for track in  pc.get_tracks().lock().await.values(){
           to_peer.add_remote_track(&track).await;
-          println!("Adding track {:?} to peer {:?}\n", track, to_peer.get_id());
+          debug!("Adding track {:?} to peer {:?}\n", track, to_peer.get_id());
         }
       }
     }
@@ -74,6 +78,8 @@ async fn main() {
     .arg(arg!(--addr <VALUE>).default_value("127.0.0.1").required(false))
     .get_matches();
 
+  start_logger();
+
   let clients: Clients = Arc::new(Mutex::new(HashMap::new()));
   let groups: Groups = Arc::new(Mutex::new(HashMap::new()));
 
@@ -88,7 +94,7 @@ async fn main() {
   let port = matches.get_one::<String>("port").unwrap();
   let port = port.parse::<u16>().unwrap();
   let addr: SocketAddr = format!("{}:{}", addr, port).parse().expect("Unable to parse ip address");
-  println!("Starting server on {}", addr);
+  info!("Starting server on {}", addr);
   warp::serve(routes).run(addr).await;
 
 }

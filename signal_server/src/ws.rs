@@ -8,6 +8,7 @@ use uuid::Uuid;
 use warp::ws::{Message, WebSocket};
 use crate::webrtc::WebRTCConnection;
 use serde_json::Value;
+use tracing::{info, debug, warn, error};
 
 pub async fn client_connection(ws: WebSocket, clients: Clients, groups: Groups) {
   let (client_ws_sender, mut client_ws_rcv) = ws.split();
@@ -18,7 +19,7 @@ pub async fn client_connection(ws: WebSocket, clients: Clients, groups: Groups) 
   // Forward messages fro mthe unbounded_channelto the websocket connection
   tokio::task::spawn(client_rcv.forward(client_ws_sender).map(|result| {
     if let Err(e) = result {
-      println!("error sending websocket msg: {}", e);
+      warn!("error sending websocket msg: {}", e);
     }
   }));
 
@@ -37,7 +38,7 @@ pub async fn client_connection(ws: WebSocket, clients: Clients, groups: Groups) 
     let msg = match result {
       Ok(msg) => msg,
       Err(e) => {
-        println!("error receiving message for id {}): {}", uuid.clone(), e);
+        warn!("error receiving message for id {}): {}", uuid.clone(), e);
         break;
       }
     };
@@ -46,7 +47,7 @@ pub async fn client_connection(ws: WebSocket, clients: Clients, groups: Groups) 
 
   clients.lock().await.remove(&uuid);
 
-  println!("{} disconnected", uuid);
+  info!("{} disconnected", uuid);
 }
 
 // msg structure
@@ -76,13 +77,13 @@ async fn parse_headers(msg: &Value, groups: &Groups) -> Headers {
 }
 
 async fn client_msg(client_id: &str, msg: Message, clients: &Clients, groups: &Groups) {
-  println!("\n-----\nreceived message from {}: {:?}\n", client_id, msg);
+  info!("received message from {}", client_id);
+  debug!("msg is:\n{:?}", msg);
   let message_str = match msg.to_str() {
     Ok(v) => v,
     Err(_) => return,
   };
-  println!("Current state of groups {:?}\n", groups);
-  println!("received message from {}: {:?}\n", client_id, message_str);
+  debug!("Current state of groups {:?}\n", groups);
   let message: Value = serde_json::from_str(message_str).unwrap();
 
   let headers = parse_headers(&message, groups).await;
@@ -97,7 +98,7 @@ async fn client_msg(client_id: &str, msg: Message, clients: &Clients, groups: &G
         // create peer_connection
         match sdp_message_type.as_str().unwrap() {
           "offer" => {
-            println!("Got offer");
+            info!("Got offer from client {}", client_id);
             let group_id = match headers.stream_group {
               Some(v) => v,
               None => panic!("It is Forbidden to process client without a group assigned")
@@ -107,10 +108,10 @@ async fn client_msg(client_id: &str, msg: Message, clients: &Clients, groups: &G
             // FIXME: cloning the mutex with client is potentially dangerous ad &Clients and
             // Groups[group] contains the client.
             group.lock().await.subscribe(client.clone()).await;
-            println!("State of group after subscribe {:?}", group);
+            debug!("State of group after subscribe {:?}", group);
             let mut peer_connection = match WebRTCConnection::new(client.lock().await.sender.clone(), group.clone()).await {
               Ok(conn) => {
-                println!("Successfull WebRTCConnection created {:?}", conn); 
+                debug!("Successfull WebRTCConnection created {:?}", conn); 
                 conn
               },
               Err(err) => {
@@ -130,34 +131,29 @@ async fn client_msg(client_id: &str, msg: Message, clients: &Clients, groups: &G
             if let Some(pc) = &client.lock().await.peer_connection {
               pc.process_answer(sdp_message.to_string()).await;
             }
-            println!("Got sdp answer");
+            debug!("Got sdp answer from client {}", client_id);
           },
           _ => {
-            println!("Unkown SDP message type {:?}", sdp_message_type.as_str().unwrap());
+            debug!("Unkown SDP message type {:?}", sdp_message_type.as_str().unwrap());
           }
         }
       }, 
       None => {
-        println!("SDP message doesn't have a type entry: {:?}", sdp_message);
+        debug!("SDP message doesn't have a type entry: {:?}", sdp_message);
       }
     }
   }
 
   if let Some(ice_candidate) = message.get("ice") {
-    // get peer Connection
-    // add ice candidate to peer connection
-    println!("Before ice lock");
-    println!("Before ice lock");
+    info!("Got ice candidate from client {}", client_id);
     let client = clients.get(client_id).unwrap().lock().await;
-    println!("After ice lock");
     match &client.peer_connection {
       Some(pc) => {
-        println!("Processing new ice cadidate for client {:?}", client_id);
+        info!("Processing new ice cadidate for client {:?}", client_id);
         pc.process_ice_candidate(ice_candidate.to_string()).await;
         pc.summary();
       },
-      None => println!("couldn't add ice candidate to client as it didn't have a webrtc connection")
+      None => error!("couldn't add ice candidate to client as it didn't have a webrtc connection")
     }
-    println!("Got ice");
   }
 }
