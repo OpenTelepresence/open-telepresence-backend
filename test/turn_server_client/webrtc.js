@@ -54,14 +54,13 @@ function start(isCaller) {
 
   peerConnection.onnegotiationneeded = async () => {
     console.log('negotiation needed');
-    // await pc.setLocalDescription(await pc.createOffer());
-    // io.send({description: pc.localDescription});
+    peerConnection.createOffer().then(createdDescription).catch(errorHandler);
   }
   peerConnection.addStream(localStream);
 
-  if(isCaller) {
-    peerConnection.createOffer().then(createdDescription).catch(errorHandler);
-  }
+  // if(isCaller) {
+    // peerConnection.createOffer().then(createdDescription).catch(errorHandler);
+  // }
 }
 
 function gotMessageFromServer(message) {

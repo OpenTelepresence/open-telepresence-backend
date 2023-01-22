@@ -83,11 +83,11 @@ async fn client_msg(client_id: &str, msg: Message, clients: &Clients, groups: &G
     Ok(v) => v,
     Err(_) => return,
   };
-  debug!("Current state of groups {:?}\n", groups);
   let message: Value = serde_json::from_str(message_str).unwrap();
 
   let headers = parse_headers(&message, groups).await;
 
+  // FIXME: client.lock() implicitly prevents other messages from being processed concurrently.
   let clients =  clients.lock().await;
   let client = clients.get(client_id);
   let client = client.unwrap();
@@ -121,11 +121,6 @@ async fn client_msg(client_id: &str, msg: Message, clients: &Clients, groups: &G
             peer_connection.setup_callbacks().await;
             group.lock().await.add_tracks(&mut peer_connection).await;
             client.lock().await.peer_connection = Some(peer_connection);
-            let pc = &mut client.lock().await;
-            let pc = &mut pc.peer_connection.as_mut().unwrap();
-
-            pc.process_offer(sdp_message.to_string()).await;
-            pc.summary();
           },
           "answer" => {
             if let Some(pc) = &client.lock().await.peer_connection {
@@ -151,7 +146,6 @@ async fn client_msg(client_id: &str, msg: Message, clients: &Clients, groups: &G
       Some(pc) => {
         info!("Processing new ice cadidate for client {:?}", client_id);
         pc.process_ice_candidate(ice_candidate.to_string()).await;
-        pc.summary();
       },
       None => error!("couldn't add ice candidate to client as it didn't have a webrtc connection")
     }

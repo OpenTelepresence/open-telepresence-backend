@@ -22,7 +22,7 @@ use webrtc::{
 use webrtc::Error;
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use tracing::{debug, warn};
 
@@ -45,6 +45,66 @@ struct RTCSessionDescriptionInit {
 pub struct Track {
   track: Arc<TrackLocalStaticRTP>,
   id: String
+}
+
+fn handle_track(remote_track: Option<Arc<TrackRemote>>, p2: &Weak<RTCPeerConnection>, 
+                      group: &Arc<Mutex<Group>>, peer_identity: &String,
+                      tracks: &Weak<Mutex<HashMap<String, Arc<Track>>>>) {
+  let peer_identity2 = peer_identity.clone();
+  if let Some(track) = remote_track {
+    let media_ssrc = track.ssrc();
+    // write rtcps on interval as there isn't a rtcp event
+    let pc3 = p2.clone();
+    tokio::spawn(async move {
+      let mut result = Result::<usize, webrtc::Error>::Ok(0);
+      while result.is_ok() {
+        let timeout = tokio::time::sleep(Duration::from_secs(3));
+        tokio::pin!(timeout);
+
+        tokio::select! {
+          _ = timeout.as_mut() =>{
+            result = pc3.upgrade().unwrap().write_rtcp(&[Box::new(PictureLossIndication{
+              sender_ssrc: 0,
+              media_ssrc,
+            })]).await.map_err(Into::into);
+          }
+        };
+      }
+    });
+    // write rtps on event
+    let track2 = track.clone();
+    let group = group.clone();
+    let tracks2 = tracks.clone();
+    tokio::spawn(async move {
+      let stream_id = peer_identity2.clone();
+      let track_id = format!("{}_{}", stream_id, track2.kind().to_string());
+      let local_track = Arc::new(TrackLocalStaticRTP::new(
+          track2.codec().await.capability,
+          track_id.clone(),
+          stream_id, // FIXME: mabye this should be changed so the stream of
+                     // video-audio is different for each pair
+          ));
+      debug!("Adding local track {:?} to group {:?}\n", local_track, group);
+      let track = Track{track: local_track, id: track_id};
+      let id = track.id.clone();
+      let track = Arc::new(track.clone());
+      if let Some(tracks3) = tracks2.upgrade() {
+        tracks3.lock().await.insert(id, track.clone());
+      }
+      group.lock().await.notify_track(&track).await;
+      while let Ok((rtp, _)) = track2.read_rtp().await {
+        if let Err(err) = track.track.write_rtp(&rtp).await {
+          if Error::ErrClosedPipe != err {
+            warn!("output track write_rtp got error: {} and break", err);
+            break;
+          } else {
+            warn!("output track write_rtp got error: {}", err);
+          }
+        }
+      }
+    });
+    debug!("Got track {:?}", track);
+  };
 }
 
 impl WebRTCConnection {
@@ -113,61 +173,7 @@ impl WebRTCConnection {
     let peer_identity = self.get_id();
     let tracks = Arc::downgrade(&self.tracks);
     self.peer_connection.on_track(Box::new(move |remote_track: Option<Arc<TrackRemote>>, _rtp_receiver: Option<Arc<RTCRtpReceiver>>| {
-      let peer_identity2 = peer_identity.clone();
-      if let Some(track) = remote_track {
-        let media_ssrc = track.ssrc();
-        // write rtcps on interval as there isn't a rtcp event
-        let pc3 = p2.clone();
-        tokio::spawn(async move {
-          let mut result = Result::<usize, webrtc::Error>::Ok(0);
-          while result.is_ok() {
-            let timeout = tokio::time::sleep(Duration::from_secs(3));
-            tokio::pin!(timeout);
-
-            tokio::select! {
-              _ = timeout.as_mut() =>{
-                result = pc3.upgrade().unwrap().write_rtcp(&[Box::new(PictureLossIndication{
-                  sender_ssrc: 0,
-                  media_ssrc,
-                })]).await.map_err(Into::into);
-              }
-            };
-          }
-        });
-        // write rtps on event
-        let track2 = track.clone();
-        let group = group.clone();
-        let tracks2 = tracks.clone();
-        tokio::spawn(async move {
-          let stream_id = peer_identity2.clone();
-          let track_id = format!("{}_{}", stream_id, track2.kind().to_string());
-          let local_track = Arc::new(TrackLocalStaticRTP::new(
-              track2.codec().await.capability,
-              track_id.clone(),
-              stream_id, // FIXME: mabye this should be changed so the stream of
-                         // video-audio is different for each pair
-              ));
-          debug!("Adding local track {:?} to group {:?}\n", local_track, group);
-          let track = Track{track: local_track, id: track_id};
-          let id = track.id.clone();
-          let track = Arc::new(track.clone());
-          if let Some(tracks3) = tracks2.upgrade() {
-            tracks3.lock().await.insert(id, track.clone());
-          }
-          group.lock().await.notify_track(&track).await;
-          while let Ok((rtp, _)) = track2.read_rtp().await {
-            if let Err(err) = track.track.write_rtp(&rtp).await {
-              if Error::ErrClosedPipe != err {
-                warn!("output track write_rtp got error: {} and break", err);
-                break;
-              } else {
-                warn!("output track write_rtp got error: {}", err);
-              }
-            }
-          }
-        });
-        debug!("Got track {:?}", track);
-      };
+      handle_track(remote_track, &p2, &group, &peer_identity, &tracks);
       Box::pin(async {})
     }));
 
@@ -241,7 +247,7 @@ impl WebRTCConnection {
     };
     let res = self.peer_connection.set_remote_description(description).await;
     match res {
-      Ok(value) => debug!("Set description {:?}", value),
+      Ok(_value) => debug!("Successfully added offer remote description"),
       Err(err) => warn!("Set description error {:?}", err),
     };
     // https://stackoverflow.com/questions/38036552/rtcpeerconnection-onicecandidate-not-fire
@@ -316,6 +322,7 @@ impl WebRTCConnection {
   }
 
   pub async fn renegotiate(&self) {
+    debug!("Renegotiation started for {}", self.get_id());
     let offer = self.peer_connection.create_offer(None).await;
     if offer.is_err() {
       warn!("Error creating renegotiation offer {:?}", offer.err().unwrap());
@@ -342,15 +349,6 @@ impl WebRTCConnection {
 
   pub fn get_tracks(&self) -> &Arc<Mutex<HashMap<String, Arc<Track>>>> {
     &self.tracks
-  }
-
-  pub fn summary(&self) {
-    debug!("ice conn {} ice gathering {} signaling {} connection {}", 
-           self.peer_connection.ice_connection_state(), 
-           self.peer_connection.ice_gathering_state(),
-           self.peer_connection.signaling_state(),
-           self.peer_connection.connection_state());
-
   }
 }
 
