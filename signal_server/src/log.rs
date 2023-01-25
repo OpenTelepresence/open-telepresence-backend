@@ -1,28 +1,29 @@
-use tracing::Subscriber;
-use tracing_subscriber::prelude::*;
-use tracing_subscriber::Layer;
-use tracing_subscriber::{fmt, EnvFilter};
-
-pub struct StdoutLogger;
-
-impl<S: Subscriber> Layer<S> for StdoutLogger {}
+use tracing_subscriber::{prelude::*, fmt, EnvFilter};
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
 
 pub fn start_logger() {
-    // tracing::subscriber::set_global_default(file_logger)
-    //   .expect("setting file_logger failed");
-    let fmt_layer = fmt::layer()
+
+    let stdout_logger = fmt::layer()
         .with_target(false)
         .with_line_number(true)
         .with_file(true);
 
-    let filter_layer = EnvFilter::try_from_default_env()
+    let stdout_filter = EnvFilter::try_from_default_env()
         .or_else(|_| EnvFilter::try_new("debug"))
         .unwrap();
 
-    let stdout_logger = StdoutLogger;
+    let file_appender = RollingFileAppender::new(Rotation::DAILY, "logs", "signal_server.log");
+    let debug_log = tracing_subscriber::fmt::layer()
+        .with_target(true)
+        .with_line_number(true)
+        .with_file(true)
+        .with_writer(file_appender);
+
     tracing_subscriber::registry()
-        .with(filter_layer)
-        .with(fmt_layer)
-        .with(stdout_logger)
+        .with(
+            stdout_logger
+                .with_filter(stdout_filter)
+                .and_then(debug_log)
+        )
         .init();
 }
